@@ -1,48 +1,58 @@
-from metaflow import FlowSpec, step, card, conda_base, current, Parameter, Flow, trigger
+from metaflow import FlowSpec, step, card, conda_base, current, Parameter, Flow, trigger, project, S3, retry
 from metaflow.cards import Markdown, Table, Image, Artifact
 
 URL = "https://outerbounds-datasets.s3.us-west-2.amazonaws.com/taxi/latest.parquet"
+#URL = 's3://outerbounds-datasets/taxi/latest.parquet'
 DATETIME_FORMAT = '%Y-%m-%d %H:%M:%S'
 
-@trigger(events=['s3'])
-@conda_base(libraries={'pandas': '1.4.2', 'pyarrow': '11.0.0', 'numpy': '1.21.2', 'scikit-learn': '1.1.2'})
-class TaxiFarePrediction(FlowSpec):
+# @trigger(events=['s3'])
+@conda_base(libraries={'pandas': '1.4.2', 'pyarrow': '11.0.0', 'numpy': '1.21.2', 'scikit-learn': '1.1.2', 'py-xgboost': '1.7.4'})
+@project(name="taxi_model")
+class TaxiFarePredictionTask4(FlowSpec):
 
     data_url = Parameter("data_url", default=URL)
 
     def transform_features(self, df):
 
+        # TODO: 
+            # Try to complete tasks 2 and 3 with this function doing nothing like it currently is.
+            # Understand what is happening.
+            # Revisit task 1 and think about what might go in this function.
+
         obviously_bad_data_filters = [
 
-        df.fare_amount > 0,         # fare_amount in US Dollars
-        df.trip_distance <= 100,    # trip_distance in miles
-        df.trip_distance > 0,
-        df.passenger_count >0,    # TODO: add some logic to filter out what you decide is bad data!
-        df.trip_distance >0,
-        df.tip_amount >=0,
-        df.tolls_amount >=0,
-        df.total_amount >0,
-        df.congestion_surcharge >=0,
-        df.airport_fee >=0,
-        df.hour >0
-        # TIP: Don't spend too much time on this step for this project though, it practice it is a never-ending process.
+            df.fare_amount > 0,         # fare_amount in US Dollars
+            df.trip_distance <= 100,    # trip_distance in miles
+            df.trip_distance > 0,
 
-    ]
+            # TODO: add some logic to filter out what you decide is bad data!
+            # TIP: Don't spend too much time on this step for this project though, it practice it is a never-ending process.
+            df.extra >= 0,
+            df.mta_tax >= 0,
+            df.tip_amount >= 0,
+            df.total_amount > 0,
+            df.airport_fee >= 0,
+
+        ]
 
         for f in obviously_bad_data_filters:
             df = df[f]
-
-        df= df.dropna()
-            
+        df = df.dropna()
         return df
 
+    @retry(times=2)  # maybe a read error
     @step
     def start(self):
 
         import pandas as pd
         from sklearn.model_selection import train_test_split
 
-        self.df = self.transform_features(pd.read_parquet(self.data_url))
+        with S3() as s3:
+            obj = s3.get(URL)
+            df = pd.read_parquet(obj.path)
+
+        self.df = self.transform_features(df)
+        #self.df = self.transform_features(pd.read_parquet(self.data_url))
 
         # NOTE: we are split into training and validation set in the validation step which uses cross_val_score.
         # This is a simple/naive way to do this, and is meant to keep this example simple, to focus learning on deploying Metaflow flows.
@@ -54,10 +64,11 @@ class TaxiFarePrediction(FlowSpec):
     @step
     def linear_model(self):
         "Fit a single variable, linear model to the data."
-        from sklearn.linear_model import LinearRegression
-
+        # from sklearn.linear_model import LinearRegression
+        from xgboost import XGBRegressor
         # TODO: Play around with the model if you are feeling it.
-        self.model = LinearRegression()
+        # self.model = LinearRegression()
+        self.model = XGBRegressor()
 
         self.next(self.validate)
 
@@ -103,4 +114,4 @@ class TaxiFarePrediction(FlowSpec):
 
 
 if __name__ == "__main__":
-    TaxiFarePrediction()
+    TaxiFarePredictionTask4()
